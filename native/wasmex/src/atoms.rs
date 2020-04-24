@@ -12,7 +12,7 @@ rustler::rustler_atoms! {
     atom int32;
 
     atom params;
-    atom results;
+    atom returns;
 
     atom returned_function_call;
     atom invoke_callback;

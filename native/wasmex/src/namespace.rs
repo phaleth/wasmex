@@ -3,7 +3,7 @@
 use rustler::{
     resource::ResourceArc, types::ListIterator, Encoder, Env, Error, MapIterator, OwnedEnv, Term,
 };
-use std::sync::{Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use wasmer_runtime::{self as runtime};
 use wasmer_runtime_core::{
     import::Namespace, typed_func::DynamicFunc, types::FuncSig, types::Type, types::Value, vm::Ctx,
@@ -12,7 +12,11 @@ use wasmer_runtime_core::{
 use crate::{atoms, instance::decode_function_param_terms};
 
 pub struct CallbackTokenResource {
-    pub token: (Mutex<Option<(bool, Vec<runtime::Value>)>>, Condvar),
+    pub token: (
+        Mutex<Option<(bool, Vec<runtime::Value>)>>,
+        Condvar,
+        Vec<String>,
+    ),
 }
 
 pub fn create_from_definition(
@@ -25,7 +29,7 @@ pub fn create_from_definition(
         let name = name.decode::<String>()?;
         namespace.insert(
             name.clone(),
-            create_imported_function(namespace_name.clone(), name, import),
+            create_imported_function(namespace_name.clone(), name, import)?,
         );
     }
     Ok(namespace)
@@ -34,20 +38,30 @@ pub fn create_from_definition(
 fn create_imported_function(
     namespace_name: String,
     import_name: String,
-    definition: Term,
-) -> DynamicFunc<'static> {
+    definition: Term, // %{type: function, params: [], returns: []}
+) -> Result<DynamicFunc<'static>, Error> {
     let pid = definition.get_env().pid();
+    let param_definition = definition
+        .map_get(atoms::params().encode(definition.get_env()))?
+        .decode::<ListIterator>()?
+        .map(|term| term.atom_to_string())
+        .collect::<Result<Vec<String>, _>>()?;
+    let return_definition = definition
+        .map_get(atoms::returns().encode(definition.get_env()))?
+        .decode::<ListIterator>()?
+        .map(|term| term.atom_to_string())
+        .collect::<Result<Vec<String>, _>>()?;
     // let signature = args[2];
     // let param_types = signature.map_get(atoms::params().encode(env));
-    // let result_types = signature.map_get(atoms::results().encode(env)); // TODO: copy result_types into callback_token
+    // let result_types = signature.map_get(atoms::returns().encode(env)); // TODO: copy result_types into callback_token
     // TODO: build a real signature
     let signature = std::sync::Arc::new(FuncSig::new(vec![Type::I32, Type::I32], vec![Type::I32]));
 
-    DynamicFunc::new(
+    Ok(DynamicFunc::new(
         signature,
         move |_ctx: &mut Ctx, params: &[Value]| -> Vec<runtime::Value> {
             let callback_token = ResourceArc::new(CallbackTokenResource {
-                token: (Mutex::new(None), Condvar::new()),
+                token: (Mutex::new(None), Condvar::new(), return_definition.clone()),
             });
 
             let mut msg_env = OwnedEnv::new();
@@ -88,7 +102,7 @@ fn create_imported_function(
                 None => unreachable!(),
             }
         },
-    )
+    ))
 }
 
 // called from elixir, params
